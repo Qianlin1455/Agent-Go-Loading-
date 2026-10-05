@@ -14,6 +14,7 @@ import (
 	"agent/internal/llm"
 	"agent/internal/llm/deepseek"
 	"agent/internal/tool"
+	"agent/internal/tool/calculator"
 	"agent/internal/tool/weather"
 )
 
@@ -26,6 +27,9 @@ func main() {
 	provider := deepseek.NewClient(cfg.APIKey, cfg.BaseURL, cfg.Model, &http.Client{})
 	registry := tool.NewRegistry()
 	if err := registry.Register(weather.New()); err != nil {
+		log.Fatal(err)
+	}
+	if err := registry.Register(calculator.New()); err != nil {
 		log.Fatal(err)
 	}
 	agentService := agent.New(provider, registry, cfg.MaxAgentSteps)
