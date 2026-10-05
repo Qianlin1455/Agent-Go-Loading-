@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent/internal/llm"
@@ -138,5 +139,188 @@ func TestRunStreamKeepsHistoryAcrossTurns(t *testing.T) {
 	history := session.Messages()
 	if len(history) != 6 || history[5].Content != "上海也可以继续查询。" {
 		t.Fatalf("unexpected committed history: %#v", history)
+	}
+}
+
+func TestRunStreamExceedsMaxSteps(t *testing.T) {
+	provider := &recordingStreamProvider{
+		responses: [][]llm.StreamChunk{
+			{{
+				ToolCalls: []llm.ToolCallDelta{{
+					Index: 0,
+					ID:    "call-1",
+					Type:  "function",
+					Function: llm.FunctionCall{
+						Name:      "get_weather",
+						Arguments: `{"location":"杭州"}`,
+					},
+				}},
+				FinishReason: "tool_calls",
+			}},
+			{{
+				ToolCalls: []llm.ToolCallDelta{{
+					Index: 0,
+					ID:    "call-2",
+					Type:  "function",
+					Function: llm.FunctionCall{
+						Name:      "get_weather",
+						Arguments: `{"location":"上海"}`,
+					},
+				}},
+				FinishReason: "tool_calls",
+			}},
+		},
+	}
+
+	registry := tool.NewRegistry()
+	if err := registry.Register(echoWeatherTool{}); err != nil {
+		t.Fatal(err)
+	}
+
+	const maxSteps = 2
+	a := New(provider, registry, maxSteps)
+	session := NewSession()
+
+	err := a.RunStream(
+		context.Background(),
+		session,
+		"不断查询天气",
+		nil,
+	)
+
+	if err == nil {
+		t.Fatal("expected max steps error, got nil")
+	}
+
+	wantErr := "agent reached maximum steps: 2"
+	if err.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
+	}
+
+	if len(provider.calls) != maxSteps {
+		t.Fatalf(
+			"got %d model calls, want %d",
+			len(provider.calls),
+			maxSteps,
+		)
+	}
+
+	// 超过 maxSteps 后，本轮消息应被回滚。
+	if messages := session.Messages(); len(messages) != 0 {
+		t.Fatalf("expected empty session, got %#v", messages)
+	}
+}
+
+func TestRunStreamUnknownTool(t *testing.T) {
+	provider := &recordingStreamProvider{
+		responses: [][]llm.StreamChunk{
+			{{
+				ToolCalls: []llm.ToolCallDelta{{
+					Index: 0,
+					ID:    "call-unknown",
+					Type:  "function",
+					Function: llm.FunctionCall{
+						Name:      "unknown_tool",
+						Arguments: `{}`,
+					},
+				}},
+				FinishReason: "tool_calls",
+			}},
+		},
+	}
+
+	// 使用空 Registry，不注册 unknown_tool。
+	registry := tool.NewRegistry()
+
+	a := New(provider, registry, 3)
+	session := NewSession()
+
+	err := a.RunStream(
+		context.Background(),
+		session,
+		"调用一个不存在的工具",
+		nil,
+	)
+
+	if err == nil {
+		t.Fatal("expected unknown tool error, got nil")
+	}
+
+	wantErr := `execute tool unknown_tool: unknown tool "unknown_tool"`
+	if err.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", err.Error(), wantErr)
+	}
+
+	// 找到未知工具后，不应该继续调用模型。
+	if len(provider.calls) != 1 {
+		t.Fatalf(
+			"got %d model calls, want 1",
+			len(provider.calls),
+		)
+	}
+
+	// 失败的对话不应该写入 Session。
+	if messages := session.Messages(); len(messages) != 0 {
+		t.Fatalf(
+			"expected empty session, got %#v",
+			messages,
+		)
+	}
+}
+
+func TestRunStreamInvalidToolArguments(t *testing.T) {
+	provider := &recordingStreamProvider{
+		responses: [][]llm.StreamChunk{
+			{{
+				ToolCalls: []llm.ToolCallDelta{{
+					Index: 0,
+					ID:    "call-invalid-arguments",
+					Type:  "function",
+					Function: llm.FunctionCall{
+						Name: "get_weather",
+
+						// JSON 不完整，属于非法参数。
+						Arguments: `{"location":`,
+					},
+				}},
+				FinishReason: "tool_calls",
+			}},
+		},
+	}
+
+	registry := tool.NewRegistry()
+	if err := registry.Register(echoWeatherTool{}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := New(provider, registry, 3)
+	session := NewSession()
+
+	err := a.RunStream(
+		context.Background(),
+		session,
+		"查询天气",
+		nil,
+	)
+
+	if err == nil {
+		t.Fatal("expected invalid arguments error, got nil")
+	}
+
+	// 不建议完整匹配 JSON 库的错误，因为不同 Go 版本的描述可能变化。
+	if !strings.Contains(err.Error(), "execute tool get_weather") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Fatalf("expected JSON decode error, got: %v", err)
+	}
+
+	// 工具执行失败后，本轮对话应该回滚。
+	if messages := session.Messages(); len(messages) != 0 {
+		t.Fatalf(
+			"expected empty session, got %#v",
+			messages,
+		)
 	}
 }
