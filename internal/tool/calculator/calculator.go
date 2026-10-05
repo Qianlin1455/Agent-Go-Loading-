@@ -27,7 +27,7 @@ func (t *Tool) Definition() llm.ToolDefinition {
 		Type: "function",
 		Function: llm.ToolFunction{
 			Name:        "get_calculator",
-			Description: "获取两数相加/减/乘/除的结果",
+			Description: "计算两个数字的加、减、乘、除结果",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -54,10 +54,10 @@ func (t *Tool) Definition() llm.ToolDefinition {
 func (t *Tool) Execute(_ context.Context, arguments string) (string, error) {
 	var args Arguments
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", fmt.Errorf("decode weather arguments: %w", err)
+		return "", fmt.Errorf("decode calculator arguments: %w", err)
 	}
 	if strings.TrimSpace(args.Operation) == "" {
-		return "", fmt.Errorf("location cannot be empty")
+		return "", fmt.Errorf("operation cannot be empty")
 	}
 
 	var result float64
