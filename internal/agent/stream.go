@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"agent/internal/llm"
 )
@@ -78,11 +79,14 @@ func (a *Agent) RunStream(ctx context.Context, session *Session, input string, h
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if len(message.ToolCalls) == 0 && finishReason != "" && finishReason != "stop" {
+			return fmt.Errorf("model stopped with reason %q", finishReason)
+		}
+		if strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			return fmt.Errorf("model returned empty response")
+		}
 		messages = append(messages, message)
 		if len(message.ToolCalls) == 0 {
-			if finishReason != "" && finishReason != "stop" {
-				return fmt.Errorf("model stopped with reason %q", finishReason)
-			}
 			session.commitTurn(messages)
 			committed = true
 			return nil
